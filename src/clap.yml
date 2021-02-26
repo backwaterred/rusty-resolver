@@ -1,0 +1,12 @@
+name: Rust DNS Resolver
+version: "0.0"
+author: TS
+about: A recursive DNS Resolver
+args:
+    - lookup:
+        short: l
+        long: lookup
+        value_name: HOSTNAME
+        help: Specifies the hostname to lookup
+        required: true
+        takes_value: true

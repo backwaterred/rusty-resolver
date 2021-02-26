@@ -5,7 +5,7 @@ use nom::error::{ Error, ErrorKind };
 //  ------------ DNS Data Types -------------
 pub type HeaderRow2 = ((QR, OpCode, bool, bool, bool), (bool, RespCode));
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QType
 {
     A     = 1,
@@ -15,7 +15,7 @@ pub enum QType
     PTR   = 12,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QClass
 {
     IN = 1,
@@ -183,7 +183,7 @@ impl Header
 }
 
 // ------------- Resource Records -------------
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Question<'a>
 {
     pub qname: &'a str,
@@ -474,7 +474,7 @@ mod tests
                 qclass: QClass::IN,
             },
             Question {
-                qname: "www.example.com",
+                qname: "www.wikipedia.org",
                 qtype: QType::AAAA,
                 qclass: QClass::Any,
             },
@@ -503,9 +503,9 @@ mod tests
         v.push(3);
         v.extend("www".as_bytes());
         v.push(7);
-        v.extend("example".as_bytes());
+        v.extend("wikipedia".as_bytes());
         v.push(3);
-        v.extend("com".as_bytes());
+        v.extend("org".as_bytes());
         v.push(0); // str termination
         v.extend(&[0b0, 28]);
         v.extend(&[0b0, 0xFF]);

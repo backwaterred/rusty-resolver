@@ -1,9 +1,14 @@
 
-use crate::dns;
-use nom::{ IResult };
+// use nom::{ IResult };
 use nom::number::complete::{ be_u16 };
-use nom::{ bits, do_parse, map, map_res, named, take, take_bits, tuple };
+use nom::character::is_alphanumeric;
+use nom::{
+    bits, do_parse, map, map_res, named,
+    take, take_bits, take_while,
+    tuple };
 use std::convert::TryFrom;
+
+use crate::dns::{ Header, HeaderRow2, Question, Message, QType, QClass, RespCode, QR, OpCode };
 
 #[inline]
 fn boolify(n: u8) -> bool
@@ -11,15 +16,24 @@ fn boolify(n: u8) -> bool
     n != 0
 }
 
+named!(parse_rname_section<&str>,
+       do_parse!(
+           len: be_u16 >>
+           // section: map!(take!(len), take_while!(is_alphanumeric)) >>
+           section: take!(len) >>
+           (section)
+       )
+);
+
 // ----- Header -----
-named!(parse_r2_first<(dns::QR,dns::OpCode,bool,bool,bool)>,
+named!(parse_r2_first<(QR,OpCode,bool,bool,bool)>,
        bits!(
            tuple!(
                map_res!(take_bits!(1u8),
-                        |b: u8| dns::QR::try_from(b)
+                        |b: u8| QR::try_from(b)
                ),
                map_res!(take_bits!(4u8),
-                        |b: u8| dns::OpCode::try_from(b)
+                        |b: u8| OpCode::try_from(b)
                ),
                map!(take_bits!(1u8), boolify),
                map!(take_bits!(1u8), boolify),
@@ -28,27 +42,26 @@ named!(parse_r2_first<(dns::QR,dns::OpCode,bool,bool,bool)>,
        )
 );
 
-named!(parse_r2_second<(bool,dns::RespCode)>,
+named!(parse_r2_second<(bool,RespCode)>,
        bits!(
            tuple!(
                map!(take_bits!(1u8), boolify),
                map_res!(
                    take_bits!(7u8),
-                   |b: u8| dns::RespCode::try_from(b)
+                   |b: u8| RespCode::try_from(b)
                )
            )
        )
 );
 
-named!(parse_r2<dns::HeaderRow2>,
+named!(parse_r2<HeaderRow2>,
        tuple!(
            parse_r2_first,
            parse_r2_second
        )
 );
 
-use dns::Header;
-named!(parse_header<dns::Header>,
+named!(parse_header<Header>,
        do_parse!(
            id: be_u16       >>
            r2: parse_r2     >>
@@ -62,21 +75,19 @@ named!(parse_header<dns::Header>,
 );
 
 // ----- Question -----
-// TODO
+named!(parse_question<Question>,
+       // TODO!
+       take!(0)
+);
 
 // ----- Message -----
-named!(parse_msg<dns::Message>,
+named!(pub parse_msg<Message>,
        do_parse!(
-           h: parse_header >>
-           ...
-           m: map!(take!(0), |_| Message { header, ... })
+           header: parse_header >>
+           m: map!(take!(0), |_| Message { header, quests: None, answs: None, auths: None, adds: None }) >>
+           (m)
        )
 );
-// consider named!(pub parse_message(...), ...)
-// pub fn parse_msg(input: &[u8]) -> IResult<&[u8], dns::Message>
-// {
-//     panic!()
-// }
 
 #[cfg(test)]
 mod tests
@@ -91,7 +102,7 @@ mod tests
         let (_, ((qr, op, aa, tr, rd), (ra, rcode))) = parse_r2(v.as_slice()).unwrap();
 
         assert_eq!(((qr, op, aa, tr, rd), (ra, rcode)),
-                   ((dns::QR::Query, dns::OpCode::StdQuery, false, false, false), (false, dns::RespCode::Ok)));
+                   ((QR::Query, OpCode::StdQuery, false, false, false), (false, RespCode::Ok)));
     }
    
     #[test]
@@ -104,27 +115,27 @@ mod tests
         let (_, ((qr, op, aa, tr, rd), (ra, rcode))) = parse_r2(v.as_slice()).unwrap();
 
         assert_eq!(((qr, op, aa, tr, rd), (ra, rcode)),
-                   ((dns::QR::Response,
-                     dns::OpCode::Status,
+                   ((QR::Response,
+                     OpCode::Status,
                      true,
                      true,
                      true),
                     (true,
-                     dns::RespCode::Refused)));
+                     RespCode::Refused)));
     }
 
     #[test]
     fn test_parse_header()
     {
-        let h = dns::Header {
+        let h = Header {
             id: 0xFEED,
-            qr: dns::QR::Response,
-            op: dns::OpCode::StdQuery,
+            qr: QR::Response,
+            op: OpCode::StdQuery,
             auth_answ: true,
             trunc_resp: false,
             rec_desired: true,
             rec_avail: false,
-            rcode: dns::RespCode::FormatError,
+            rcode: RespCode::FormatError,
             qd_count: 0,
             an_count: 0xFF,
             ns_count: 0xAB,
@@ -139,15 +150,15 @@ mod tests
     #[test]
     fn test_parse_header_more()
     {
-        let h = dns::Header {
+        let h = Header {
             id: 0xABCD,
-            qr: dns::QR::Query,
-            op: dns::OpCode::IvQuery,
+            qr: QR::Query,
+            op: OpCode::IvQuery,
             auth_answ: false,
             trunc_resp: true,
             rec_desired: false,
             rec_avail: true,
-            rcode: dns::RespCode::Ok,
+            rcode: RespCode::Ok,
             qd_count: 0xDE,
             an_count: 0xAD,
             ns_count: 0xBE,
@@ -157,5 +168,19 @@ mod tests
         let (_, parsed_h) = parse_header(&h.to_bytes()).unwrap();
 
         assert_eq!(h, parsed_h);
+    }
+
+    #[test]
+    fn test_parse_question_basic()
+    {
+        let q = Question {
+            qname: "www.example.com",
+            qtype: QType::A,
+            qclass: QClass::IN,
+        };
+
+        let (_, parsed_q) = parse_question(&q.to_bytes()).unwrap();
+
+        assert_eq!(q, parsed_q);
     }
 }

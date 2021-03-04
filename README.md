@@ -1,4 +1,4 @@
-# Rusty Resolver
+# 🦀 Rusty Resolver
 
 A recursive DNS resolver written in Rust.
 

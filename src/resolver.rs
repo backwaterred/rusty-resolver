@@ -5,8 +5,9 @@ use std::net::{ IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket };
 use crate::dns::{ self, Message, Question };
 use crate::parser::parse_msg;
 
-const DNS_SRVR1: IpAddr = IpAddr::V4(Ipv4Addr::new(84,200,69,80));
-const DNS_SRVR2: IpAddr = IpAddr::V4(Ipv4Addr::new(84,200,70,40));
+const DNS_SRVR1: IpAddr = IpAddr::V4(Ipv4Addr::new(192,168,1,253));
+// const DNS_SRVR1: IpAddr = IpAddr::V4(Ipv4Addr::new(84,200,69,80));
+// const DNS_SRVR2: IpAddr = IpAddr::V4(Ipv4Addr::new(84,200,70,40));
 const DNS_PORT: u16 = 53;
 const RESP_BUFF_SIZE: usize = 128;
 
@@ -14,12 +15,12 @@ pub fn resolve(hostname: &str) -> Result<IpAddr, Box<dyn Error>>
 {
     let qs = [
         Question {
-            qname: hostname,
+            qname: hostname.to_string(),
             qtype: dns::QType::A,
             qclass: dns::QClass::IN,
         },
         Question {
-            qname: hostname,
+            qname: hostname.to_string(),
             qtype: dns::QType::AAAA,
             qclass: dns::QClass::IN,
         },
@@ -37,9 +38,10 @@ pub fn resolve(hostname: &str) -> Result<IpAddr, Box<dyn Error>>
 
     let (len, r_addr) = sock.recv_from(&mut dns_resp)?;
 
-    let resp = parse_msg(&dns_resp[..len]);
-
-    println!("Got resp:\n{:?}", resp);
+    if let Ok(resp) = parse_msg(&dns_resp[..len])
+    {
+        println!("Got resp:\n{:?}", resp);
+    }
 
     Ok(IpAddr::V6(Ipv6Addr::new(0,0,0,0,0,0,0,1)))
 }

@@ -2,6 +2,24 @@ use std::convert::TryInto;
 use std::convert::TryFrom;
 use nom::error::{ Error, ErrorKind };
 
+//  ------------ DNS Helper Fns -------------
+
+// EFFECTS: Extends given vector with string in RFC 1035 domain name format
+#[inline]
+fn append_rname(bytes: &mut Vec<u8>, s: &String) -> Result<(), Box<dyn std::error::Error>>
+{
+    for w in s.split(".")
+    {
+        bytes.push(w.len()
+                   .try_into()?);
+                   // .expect("rname_to_bytes cannot convert hostname section into u8"));
+        bytes.extend(w.bytes());
+    }
+    bytes.push(0);
+
+    Ok(())
+}
+
 //  ------------ DNS Data Types -------------
 pub type HeaderRow2 = ((QR, OpCode, bool, bool, bool), (bool, RespCode));
 
@@ -15,11 +33,88 @@ pub enum QType
     PTR   = 12,
 }
 
+impl TryFrom<u16> for QType
+{
+    type Error = &'static str;
+
+    fn try_from(i: u16) -> Result<Self, Self::Error>
+    {
+        match i {
+            1  => Ok(QType::A),
+            28 => Ok(QType::AAAA),
+            2  => Ok(QType::NS),
+            5  => Ok(QType::CNAME),
+            12 => Ok(QType::PTR),
+            _  => Err("QType Value Not Supported"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Type
+{
+    A     = 1,
+    AAAA  = 28,
+    NS    = 2,
+    CNAME = 5,
+    PTR   = 12,
+}
+
+impl TryFrom<u16> for Type
+{
+    type Error = &'static str;
+
+    fn try_from(i: u16) -> Result<Self, Self::Error>
+    {
+        match i {
+            1  => Ok(Type::A),
+            28 => Ok(Type::AAAA),
+            2  => Ok(Type::NS),
+            5  => Ok(Type::CNAME),
+            12 => Ok(Type::PTR),
+            _  => Err("(RR)Type Value Not Supported"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QClass
 {
     IN = 1,
     Any = 255,
+}
+
+impl TryFrom<u16> for QClass
+{
+    type Error = &'static str;
+
+    fn try_from(i: u16) -> Result<Self, Self::Error>
+    {
+        match i {
+            1   => Ok(QClass::IN),
+            255 => Ok(QClass::Any),
+            _   => Err("QClass Value Not Supported"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Class
+{
+    IN = 1,
+}
+
+impl TryFrom<u16> for Class
+{
+    type Error = &'static str;
+
+    fn try_from(i: u16) -> Result<Self, Self::Error>
+    {
+        match i {
+            1   => Ok(Class::IN),
+            _   => Err("(RR)Class Value Not Supported"),
+        }
+    }
 }
 
 // ------------- Header -------------
@@ -31,7 +126,8 @@ pub enum QR
     Response,
 }
 
-impl TryFrom<u8> for QR {
+impl TryFrom<u8> for QR
+{
     type Error = nom::error::Error<u8>;
 
     fn try_from(i: u8) -> Result<Self, Self::Error>
@@ -52,7 +148,8 @@ pub enum OpCode
     Status = 2,
 }
 
-impl TryFrom<u8> for OpCode {
+impl TryFrom<u8> for OpCode
+{
     type Error = &'static str;
 
     fn try_from(i: u8) -> Result<Self, Self::Error>
@@ -184,27 +281,21 @@ impl Header
 
 // ------------- Resource Records -------------
 #[derive(Debug, PartialEq)]
-pub struct Question<'a>
+pub struct Question
 {
-    pub qname: &'a str,
+    pub qname: String,
     pub qtype: QType,
     pub qclass: QClass,
 }
 
-impl Question<'_>
+impl Question
 {
     pub fn to_bytes(&self) -> Vec<u8>
     {
         let mut bytes: Vec<u8> = Vec::new();
 
-        for w in self.qname.split(".") {
-            bytes.push(w.len()
-                       .try_into()
-                       .expect("Question::to_bytes cannot convert hostname section into u8"));
-            bytes.extend(w.bytes());
-        }
-        bytes.push(0);
-
+        append_rname(&mut bytes, &self.qname)
+            .expect("Couldn't convert qname to bytes (section too long)");
         bytes.extend(&(self.qtype as u16).to_be_bytes());
         bytes.extend(&(self.qclass as u16).to_be_bytes());
 
@@ -212,30 +303,120 @@ impl Question<'_>
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+pub enum RData
+{
+    A(u8,u8,u8,u8),
+    AAAA(u16, u16, u16, u16, u16, u16, u16, u16),
+    NS(String),
+    CNAME(String),
+}
+
+impl RData
+{
+    fn to_bytes(&self) -> Vec<u8>
+    {
+        match self
+        {
+            RData::A(b1,b2,b3,b4) => {
+                let mut v = Vec::new();
+                v.extend(format!("{}.{}.{}.{}", *b1, *b2, *b3, *b4).as_bytes());
+
+                v
+            },
+            RData::AAAA(0, 0, 0, 0, 0, 0, 0, 0) => 
+                vec![b"::"],
+            RData::AAAA(tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8) => {
+                let mut v = Vec::new();
+
+                let mut last = false;
+                let mut last_last = false;
+
+                for tb in [tb1, tb2, tb3, tb4, tb5, tb6, tb7, tb8].iter()
+                {
+
+                    if **tb != 0
+                    {
+                        last = false;
+                        last_last = false;
+                        v.extend(tb.to_string().bytes());
+                    }
+                    else
+                    {
+                        last_last = last;
+                        last = true;
+                    }
+
+                    if !(last && last_last)
+                    {
+                        v.extend(":".bytes());
+                    }
+                }
+
+                v
+            },
+            RData::NS(rname) => {
+                let mut v = Vec::new();
+
+                append_rname(&mut v, &rname)
+                    .expect("Couldn't convert NS to bytes (section too long)");
+
+                v
+            }
+            RData::CNAME(rname) => {
+                let mut v = Vec::new();
+
+                append_rname(&mut v, &rname)
+                    .expect("Couldn't convert CName to bytes (section too long)");
+
+                v
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct ResourceRecord
-{}
+{
+    pub name: String,
+    pub rr_type: Type,
+    pub rr_class: Class,
+    pub ttl: u32,
+    pub rd_len: u16,
+    pub rdata: RData,
+}
 
 impl ResourceRecord
 {
     pub fn to_bytes(&self) -> Vec<u8>
     {
-        panic!()
+        let mut bytes = Vec::new();
+
+        append_rname(&mut bytes, &self.name)
+            .expect("Couldn't convert RR Name to bytes (section too long)");
+        bytes.extend(&(self.rr_type as u16).to_be_bytes());
+        bytes.extend(&(self.rr_class as u16).to_be_bytes());
+        bytes.extend(&(self.ttl).to_be_bytes());
+        bytes.extend(&(self.rd_len).to_be_bytes());
+        bytes.extend(self.rdata.to_bytes());
+
+        bytes
     }
 }
 // ------------- Message -------------
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Message<'a>
 {
     pub header: Header,
-    pub quests: Option<&'a [Question<'a>]>,
+    pub quests: Option<&'a [Question]>,
     pub answs:  Option<&'a [ResourceRecord]>,
     pub auths:  Option<&'a [ResourceRecord]>,
     pub adds:   Option<&'a [ResourceRecord]>,
 
 }
 
-impl Message<'_> {
+impl Message<'_>
+{
     pub fn to_bytes(&self) -> Vec<u8>
     {
         let mut bytes = Vec::new();
@@ -260,7 +441,7 @@ impl Message<'_> {
         bytes
     }
 
-    pub fn build_query<'a>(id: u16, quests: &'a [Question<'a>]) -> Message<'a>
+    pub fn build_query<'a>(id: u16, quests: &'a [Question]) -> Message<'a>
     {
         let qd_count: u16 = quests.len()
                                     .try_into()
@@ -329,6 +510,181 @@ mod tests
         ];
 
         assert_eq!(v, h.to_bytes())
+    }
+
+    #[test]
+    fn test_question_to_bytes()
+    {
+        let q = Question {
+            qname: String::from("wvs.spooky.com"),
+            qtype: QType::CNAME,
+            qclass: QClass::IN,
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 0x05]);
+        v.extend(&[0x00, 0x01]);
+
+        assert_eq!(v, q.to_bytes());
+    }
+
+    #[test]
+    fn test_rr_A_IN_to_bytes()
+    {
+        let q = ResourceRecord {
+            name: String::from("wvs.spooky.com"),
+            rr_type: Type::A,
+            rr_class: Class::IN,
+            ttl: 0xBEEFDEAD,
+            rd_len: 0xDEEF,
+            rdata: RData::A(255, 254, 253, 252),
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0xBE, 0xEF, 0xDE, 0xAD]);
+        v.extend(&[0xDE, 0xEF]);
+        v.extend("255.254.253.252".bytes());
+
+        assert_eq!(v, q.to_bytes());
+    }
+
+    #[test]
+    fn test_rr_AAAA_IN_to_bytes()
+    {
+        let q = ResourceRecord {
+            name: String::from("wvs.spooky.com"),
+            rr_type: Type::AAAA,
+            rr_class: Class::IN,
+            ttl: 0xBEEFDEAD,
+            rd_len: 0xDEEF,
+            rdata: RData::AAAA(0xDEAD,0xBEEF,0xDEAD,0xBEEF,0xDEAD,0xBEEF,0xDEAD,0xBEEF),
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 28]);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0xBE, 0xEF, 0xDE, 0xAD]);
+        v.extend(&[0xDE, 0xEF]);
+        v.extend("57005:48879:57005:48879:57005:48879:57005:48879".bytes());
+
+        assert_eq!(v, q.to_bytes());
+    }
+
+    #[test]
+    fn test_rr_AAAA_IN_localhost_to_bytes()
+    {
+        let q = ResourceRecord {
+            name: String::from("wvs.spooky.com"),
+            rr_type: Type::AAAA,
+            rr_class: Class::IN,
+            ttl: 0xBEEFDEAD,
+            rd_len: 0xDEEF,
+            rdata: RData::AAAA(0,0,0,0,0,0,0,1),
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 28]);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0xBE, 0xEF, 0xDE, 0xAD]);
+        v.extend(&[0xDE, 0xEF]);
+        v.extend("::1".bytes());
+
+        assert_eq!(v, q.to_bytes());
+    }
+
+    #[test]
+    fn test_rr_AAAA_IN_internal_zs_to_bytes()
+    {
+        let q = ResourceRecord {
+            name: String::from("wvs.spooky.com"),
+            rr_type: Type::AAAA,
+            rr_class: Class::IN,
+            ttl: 0xBEEFDEAD,
+            rd_len: 0xDEEF,
+            rdata: RData::AAAA(2001,1608,10,25,0,0,9249,0xd69b),
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 28]);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0xBE, 0xEF, 0xDE, 0xAD]);
+        v.extend(&[0xDE, 0xEF]);
+        v.extend("2001:1608:10:25::9249:d69b".bytes());
+
+        assert_eq!(v, q.to_bytes());
+    }
+
+
+    #[test]
+    fn test_rr_CNAME_to_bytes()
+    {
+        let q = ResourceRecord {
+            name: String::from("wvs.spooky.com"),
+            rr_type: Type::CNAME,
+            rr_class: Class::IN,
+            ttl: 0x89ABCDEF,
+            rd_len: 0xFEED,
+            rdata: RData::CNAME(String::from("www.halloween.fr")),
+        };
+
+        let mut v = Vec::new();
+        v.push(3);
+        v.extend(b"wvs");
+        v.push(6);
+        v.extend(b"spooky");
+        v.push(3);
+        v.extend(b"com");
+        v.push(0);
+        v.extend(&[0x00, 0x05]);
+        v.extend(&[0x00, 0x01]);
+        v.extend(&[0x89, 0xAB, 0xCD, 0xEF]);
+        v.extend(&[0xFE, 0xED]);
+        v.push(3);
+        v.extend(b"www");
+        v.push(9);
+        v.extend(b"halloween");
+        v.push(2);
+        v.extend(b"fr");
+        v.push(0);
+
+        assert_eq!(v, q.to_bytes());
     }
 
     #[test]
@@ -420,7 +776,7 @@ mod tests
 
         let qs = [
             Question {
-                qname: "www.example.com",
+                qname: String::from("www.example.com"),
                 qtype: QType::A,
                 qclass: QClass::IN,
             },
@@ -469,12 +825,12 @@ mod tests
 
         let qs = [
             Question {
-                qname: "www.example.com",
+                qname: String::from("www.example.com"),
                 qtype: QType::A,
                 qclass: QClass::IN,
             },
             Question {
-                qname: "www.wikipedia.org",
+                qname: String::from("www.wikipedia.org"),
                 qtype: QType::AAAA,
                 qclass: QClass::Any,
             },
@@ -502,7 +858,7 @@ mod tests
 
         v.push(3);
         v.extend("www".as_bytes());
-        v.push(7);
+        v.push(9);
         v.extend("wikipedia".as_bytes());
         v.push(3);
         v.extend("org".as_bytes());

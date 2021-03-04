@@ -2,4 +2,4 @@
 
 A recursive DNS resolver written in Rust.
 
-Checkout cli.yml for available commands.
+Checkout [src/clap.yml](src/clap.yml) for available commands.

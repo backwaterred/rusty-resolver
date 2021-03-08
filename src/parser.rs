@@ -1,20 +1,26 @@
 
+use crate::dns::{
+    QType, QClass, Type, Class,
+    header::Header, header::HeaderRow2, header::QR, header::OpCode, header::RespCode,
+    message::Message,
+    question::Question,
+    resourcerecord::ResourceRecord, resourcerecord::RData
+};
+// use nom::lib::std::ops::Fn;
 use nom::{ IResult };
+use nom::combinator::{ map_res };
 use nom::number::complete::{ be_u8, be_u16, be_u32 };
 use nom::{
-    alt,
-    bits, do_parse, fold_many0, map,
-    map_res, named, take, take_str,
+    dbg_dmp,
+    bits, do_parse, fold_many0, map, many_m_n,
+    map_res, named, take_str,
     take_until, take_bits, tuple,
 };
+
 use std::convert::TryFrom;
 
-use crate::dns::{
-    Header, HeaderRow2, Question,
-    Message, QType, QClass, Type,
-    Class, RespCode, QR, OpCode,
-    ResourceRecord, RData
-};
+#[cfg(test)]
+mod tests;
 
 // ----- Helpers -----
 #[inline]
@@ -114,325 +120,120 @@ named!(parse_header<Header>,
            an_count: be_u16 >>
            ns_count: be_u16 >>
            ar_count: be_u16 >>
-           h: map!(take!(0), |_| Header::new(id, r2, qd_count, an_count, ns_count, ar_count)) >>
-           (h)
+           (Header::new(id, r2, qd_count, an_count, ns_count, ar_count))
        )
 );
 
 // ----- Question -----
 named!(parse_question<Question>,
+       dbg_dmp!(
        do_parse!(
            qname: parse_rname >>
            qtype: map_res!(be_u16, | b: u16 | QType::try_from(b)) >>
            qclass: map_res!(be_u16, | b: u16 | QClass::try_from(b)) >>
            (Question { qname, qclass, qtype })
        )
+       )
 );
 
 // ----- ResourceRecord -----
-// named!(parse_rdata_A<RData>,
-//        // TODO: COmplete this stub method
-//        take!(0)
-// );
-//
-// named!(parse_rdata_AAAA<RData>,
-//        // TODO: COmplete this stub method
-//        take!(0)
-// );
-//
-// named!(parse_rdata<RData>,
-//        // TODO: COmplete this stub method
-//        // see: alt!(???) this may not do quite what I want...
-//        alt!(parse_rdata_A |
-//             parse_rdata_AAAA
-//        )
-// );
-
-named!(parse_rr<ResourceRecord>,
+named!(parse_rdata_a<RData>,
        do_parse!(
-           name: parse_rname >>
-           rr_type: map_res!(be_u16, | b: u16 | Type::try_from(b)) >>
-           rr_class: map_res!(be_u16, | b: u16 | Class::try_from(b)) >>
-           ttl: be_u32 >>
-           rd_len: be_u16 >>
-           // rdata: parse_rdata >>
-           (ResourceRecord { name, rr_type, rr_class, ttl, rd_len, rdata: RData::CNAME(String::from("STUB!!!")) })
+           b1: be_u8 >>
+           b2: be_u8 >>
+           b3: be_u8 >>
+           b4: be_u8 >>
+           (RData::A(b1,b2,b3,b4))
        )
 );
+
+named!(parse_rdata_aaaa<RData>,
+       // TODO: Complete this stub method
+       do_parse!(
+           tb1: be_u16 >>
+           tb2: be_u16 >>
+           tb3: be_u16 >>
+           tb4: be_u16 >>
+           tb5: be_u16 >>
+           tb6: be_u16 >>
+           tb7: be_u16 >>
+           tb8: be_u16 >>
+           (RData::AAAA(tb1,tb2,tb3,tb4,tb5,tb6,tb7,tb8))
+       )
+);
+
+named!(parse_rdata_ns<RData>,
+       do_parse!(
+           rname: parse_rname >>
+           (RData::NS(rname))
+       )
+);
+
+named!(parse_rdata_cname<RData>,
+       do_parse!(
+           rname: parse_rname >>
+           (RData::CNAME(rname))
+       )
+);
+
+named!(parse_rdata_ptr<RData>,
+       do_parse!(
+           rname: parse_rname >>
+           (RData::PTR(rname))
+       )
+);
+
+fn parse_rdata(t: Type)
+              -> impl Fn(&[u8]) -> IResult<&[u8], RData>
+{
+    match t
+    {
+        Type::A =>
+            parse_rdata_a,
+        Type::AAAA =>
+            parse_rdata_aaaa,
+        Type::NS =>
+            parse_rdata_ns,
+        Type::CNAME =>
+            parse_rdata_cname,
+        Type::PTR =>
+            parse_rdata_ptr,
+    }
+}
+
+fn parse_rr(input: &[u8]) -> IResult<&[u8], ResourceRecord>
+{
+    let (rest, name) = parse_rname(input)?;
+    let (rest, rr_type) = map_res(be_u16, Type::try_from)(rest)?;
+    let (rest, rr_class) = map_res(be_u16, Class::try_from)(rest)?;
+    let (rest, ttl) = be_u32(rest)?;
+    let (rest, rd_len) = be_u16(rest)?;
+    let (rest, rdata) = parse_rdata(rr_type)(rest)?;
+
+    Ok((rest, ResourceRecord { name, rr_type, rr_class, ttl, rd_len, rdata }))
+}
 
 // ----- Message -----
 named!(pub parse_msg<Message>,
        do_parse!(
            header: parse_header >>
-           (Message { header, quests: None, answs: None, auths: None, adds: None })
+           quests: many_m_n!(header.qd_count.into(),
+                             header.qd_count.into(),
+                             parse_question) >>
+           answs: many_m_n!(header.an_count.into(),
+                            header.an_count.into(),
+                            parse_rr) >>
+           auths: many_m_n!(header.ns_count.into(),
+                            header.ns_count.into(),
+                            parse_rr) >>
+           adds: many_m_n!(header.ar_count.into(),
+                           header.ar_count.into(),
+                           parse_rr) >>
+          (Message { header,
+                     quests: if quests.is_empty() { None } else { Some(quests) },
+                     answs:  if answs.is_empty() { None } else { Some(answs) },
+                     auths:  if auths.is_empty() { None } else { Some(auths) },
+                     adds:   if adds.is_empty() { None } else { Some(adds) },
+          })
        )
 );
-
-#[cfg(test)]
-mod tests
-{
-    use super::*;
-
-    #[test]
-    fn test_parse_rname_sections()
-    {
-        let mut v = Vec::new();
-        v.push(3);
-        v.extend("www".as_bytes());
-        v.push(7);
-        v.extend("example".as_bytes());
-        v.push(3);
-        v.extend("com".as_bytes());
-        v.push(0);
-
-        let (r, v_parsed) = parse_rname_section(v.as_slice()).unwrap();
-        assert_eq!("www", v_parsed);
-        let (r, v_parsed) = parse_rname_section(r).unwrap();
-        assert_eq!("example", v_parsed);
-        let (r, v_parsed) = parse_rname_section(r).unwrap();
-        assert_eq!("com", v_parsed);
-        let (r, v_parsed) = parse_rname_section(r).unwrap();
-        assert_eq!("", v_parsed);
-
-    }
-
-    #[test]
-    fn test_parse_rname_mt()
-    {
-        let mut v = Vec::new();
-        v.push(0);
-
-        let (r, v_parsed) = parse_rname(v.as_slice()).unwrap();
-        assert_eq!(String::from(""), v_parsed);
-    }
-
-    #[test]
-    fn test_parse_rname()
-    {
-        let mut v = Vec::new();
-        v.push(3);
-        v.extend("big".as_bytes());
-        v.push(7);
-        v.extend("badwolf".as_bytes());
-        v.push(2);
-        v.extend("co".as_bytes());
-        v.push(2);
-        v.extend("jp".as_bytes());
-        v.push(0);
-
-        let (r, v_parsed) = parse_rname(v.as_slice()).unwrap();
-        assert_eq!(String::from("big.badwolf.co.jp"), v_parsed);
-    }
-
-
-    #[test]
-    fn test_pares_r2_bytes_lowvals()
-    {
-        let v = vec![0; 2];
-
-        let (_, ((qr, op, aa, tr, rd), (ra, rcode))) = parse_r2(v.as_slice()).unwrap();
-
-        assert_eq!(((qr, op, aa, tr, rd), (ra, rcode)),
-                   ((QR::Query, OpCode::StdQuery, false, false, false), (false, RespCode::Ok)));
-    }
-   
-    #[test]
-    fn test_pares_r2_bytes_highvals()
-    {
-        let v = vec![
-            0b10010111, 0b10000101,
-        ];
-
-        let (_, ((qr, op, aa, tr, rd), (ra, rcode))) = parse_r2(v.as_slice()).unwrap();
-
-        assert_eq!(((qr, op, aa, tr, rd), (ra, rcode)),
-                   ((QR::Response,
-                     OpCode::Status,
-                     true,
-                     true,
-                     true),
-                    (true,
-                     RespCode::Refused)));
-    }
-
-    #[test]
-    fn test_parse_header()
-    {
-        let h = Header {
-            id: 0xFEED,
-            qr: QR::Response,
-            op: OpCode::StdQuery,
-            auth_answ: true,
-            trunc_resp: false,
-            rec_desired: true,
-            rec_avail: false,
-            rcode: RespCode::FormatError,
-            qd_count: 0,
-            an_count: 0xFF,
-            ns_count: 0xAB,
-            ar_count: 0xCD,
-        };
-
-        let (_, parsed_h) = parse_header(&h.to_bytes()).unwrap();
-
-        assert_eq!(h, parsed_h);
-    }
-
-    #[test]
-    fn test_parse_header_more()
-    {
-        let h = Header {
-            id: 0xABCD,
-            qr: QR::Query,
-            op: OpCode::IvQuery,
-            auth_answ: false,
-            trunc_resp: true,
-            rec_desired: false,
-            rec_avail: true,
-            rcode: RespCode::Ok,
-            qd_count: 0xDE,
-            an_count: 0xAD,
-            ns_count: 0xBE,
-            ar_count: 0xEF,
-        };
-
-        let (_, parsed_h) = parse_header(&h.to_bytes()).unwrap();
-
-        assert_eq!(h, parsed_h);
-    }
-
-    #[test]
-    fn test_parse_question_basic()
-    {
-        let q = Question {
-            qname: String::from("www.example.com"),
-            qtype: QType::A,
-            qclass: QClass::IN,
-        };
-
-        let (_, parsed_q) = parse_question(&q.to_bytes()).unwrap();
-
-        assert_eq!(q, parsed_q);
-    }
-
-    #[test]
-    fn test_parse_rr_basic()
-    {
-        let rr = ResourceRecord {
-            name: String::from("goodtubers.co.uk"),
-            rr_type: Type::NS,
-            rr_class: Class::IN,
-            ttl: 0xDEADBEEF,
-            rd_len: 0xBEAD,
-            rdata: RData::NS(String::from("turnips.dns.com")),
-        };
-
-        let (_, parsed_rr) = parse_rr(&rr.to_bytes()).unwrap();
-
-        assert_eq!(rr, parsed_rr);
-    }
-
-
-    #[test]
-    fn test_parse_msg_only_qs()
-    {
-        let h = Header {
-            id: 0xBEAD,
-            qr: QR::Query,
-            op: OpCode::IvQuery,
-            auth_answ: false,
-            trunc_resp: true,
-            rec_desired: false,
-            rec_avail: true,
-            rcode: RespCode::Refused,
-            qd_count: 0xFF,
-            an_count: 0xAF,
-            ns_count: 0xBF,
-            ar_count: 0xCF,
-        };
-
-        let qs = [
-            Question {
-                qname: String::from("www.example.com"),
-                qtype: QType::A,
-                qclass: QClass::IN,
-            },
-            Question {
-                qname: String::from("www.wikipedia.org"),
-                qtype: QType::AAAA,
-                qclass: QClass::Any,
-            },
-            Question {
-                qname: String::from("www.example.com"),
-                qtype: QType::NS,
-                qclass: QClass::IN,
-            },
-            Question {
-                qname: String::from("www.wikipedia.org"),
-                qtype: QType::CNAME,
-                qclass: QClass::Any,
-            },
-            Question {
-                qname: String::from("www.wikipedia.org"),
-                qtype: QType::NS,
-                qclass: QClass::IN,
-            },
-];
-
-        let m = Message {
-            header: h,
-            quests: Some(&qs),
-            answs: None,
-            auths: None,
-            adds: None,
-        };
-
-        let m_bytes = &m.to_bytes();
-        let (_, parsed_m) = parse_msg(m_bytes).unwrap();
-
-        assert_eq!(m, parsed_m);
-    }
-
-#[test]
-    fn test_parse_msg_only_rrs()
-    {
-        let h = Header {
-            id: 0xBEAD,
-            qr: QR::Query,
-            op: OpCode::IvQuery,
-            auth_answ: false,
-            trunc_resp: true,
-            rec_desired: false,
-            rec_avail: true,
-            rcode: RespCode::Refused,
-            qd_count: 0xFF,
-            an_count: 0xAF,
-            ns_count: 0xBF,
-            ar_count: 0xCF,
-        };
-
-        let rrs = [
-            ResourceRecord {
-                name: String::from("www.myspace.com"),
-                rr_type: Type::NS,
-                rr_class: Class::IN,
-                ttl: 0xDEADBEEF,
-                rd_len: 0xBEAD,
-                rdata: RData::NS(String::from("turnips.dns.com")),
-            },
-        ];
-
-        let m = Message {
-            header: h,
-            quests: None,
-            answs: Some(&rrs),
-            auths: Some(&rrs),
-            adds: Some(&rrs),
-        };
-
-        let m_bytes = &m.to_bytes();
-        let (_, parsed_m) = parse_msg(m_bytes).unwrap();
-
-        assert_eq!(m, parsed_m);
-    }
-}
